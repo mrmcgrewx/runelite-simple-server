@@ -7,16 +7,16 @@ import lombok.Data;
 @AllArgsConstructor
 public class TargetPoint {
     // Identity
-    private final int id;            // object or NPC id
+    private final Integer id;            // object or NPC id
     private final String name;       // display name/label
 
     // World/scene info
-    private final int worldX;        // WorldPoint.getX()
-    private final int worldY;        // WorldPoint.getY()
-    private final int plane;         // 0..3
+    private final Integer worldX;        // WorldPoint.getX()
+    private final Integer worldY;        // WorldPoint.getY()
+    private final Integer plane;         // 0..3
     private final Integer sceneX;    // 0..103 (nullable if outside scene)
     private final Integer sceneY;    // 0..103 (nullable)
-    private final int regionId;      // WorldPoint.getRegionID()
+    private final Integer regionId;      // WorldPoint.getRegionID()
 
     // Minimap (only if within minimap circle)
     private final Integer minimapX;  // pixel; nullable
@@ -35,9 +35,9 @@ public class TargetPoint {
     @Data
     @AllArgsConstructor
     public static class BBox {
-        private final int x;
-        private final int y;
-        private final int w;
-        private final int h;
+        private final Integer x;
+        private final Integer y;
+        private final Integer w;
+        private final Integer h;
     }
 }

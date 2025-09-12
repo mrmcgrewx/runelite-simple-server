@@ -3,10 +3,15 @@ package net.runelite.client.server;
 import java.awt.Rectangle;
 import java.awt.Shape;
 
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.widgets.Widget;
 
+import javax.annotation.Nullable;
+
+@Slf4j
 public final class TargetPointMapper {
     private TargetPointMapper() {}
 
@@ -40,47 +45,80 @@ public final class TargetPointMapper {
         return mapCommon(client, id, name, npc.getWorldLocation(), hull, fallback);
     }
 
+    /**
+     * Map a UI widget to a TargetPoint.
+     * World/minimap fields will be null; only canvas fields are populated.
+     *
+     * @param client RuneLite client (used by mapCommon for canvas meta if needed)
+     * @param w      the widget to map
+     * @param id     an id to label this target (e.g., itemId or your own constant)
+     * @param name   a human-friendly label for this widget
+     * @return TargetPoint with canvasBox/canvasX/canvasY set, or null if not drawable
+     */
+    public static @Nullable TargetPoint fromWidget(Client client, @Nullable Widget w, int id, @Nullable String name) {
+        if (w == null || w.isHidden()) {
+            return null;
+        }
+
+        // Top-left on the game canvas (RuneLite Point, not AWT)
+        final Point p = w.getCanvasLocation();
+        final int width  = w.getWidth();
+        final int height = w.getHeight();
+
+        if (p == null || width <= 0 || height <= 0) {
+            return null;
+        }
+
+        // Build an AWT rectangle for mapCommon's canvasBox handling
+        final Rectangle rect = new Rectangle(p.getX(), p.getY(), width, height);
+
+        // For widgets we have no world location or tile polygon → pass nulls
+        // mapCommon(client, id, name, worldPoint=null, canvasTilePoly=null, canvasRect=rect)
+        return mapCommon(client, id, name, null, rect, p);
+    }
+
     /* --------- Core mapping --------- */
 
     public static TargetPoint mapCommon(
             Client client,
             int id,
             String name,
-            WorldPoint wp,
-            Shape canvasShape,
-            Point canvasFallback
+            @Nullable WorldPoint wp,           // may be null for widgets/UI
+            @Nullable Shape canvasShape,      // may be null
+            @Nullable net.runelite.api.Point canvasFallback // may be null
     ) {
-        if (wp == null) return null;
-
-        // World
-        final int worldX = wp.getX();
-        final int worldY = wp.getY();
-        final int plane  = wp.getPlane();
-        final int regionId = wp.getRegionID();
-
-        // Scene + minimap + dist
+        // ---- World/minimap/scene ----
+        Integer worldX = null, worldY = null, plane = null, regionId = null;
         Integer sceneX = null, sceneY = null, distToPlayer = null;
-        Integer minimapX = null, minimapY = null; boolean inMinimap = false;
+        Integer minimapX = null, minimapY = null;
+        boolean inMinimap = false;
 
-        LocalPoint lp = LocalPoint.fromWorld(client, wp);
-        if (lp != null) {
-            sceneX = lp.getSceneX();
-            sceneY = lp.getSceneY();
+        if (wp != null) {
+            worldX = wp.getX();
+            worldY = wp.getY();
+            plane  = wp.getPlane();
+            regionId = wp.getRegionID();
 
-            Point mm = Perspective.localToMinimap(client, lp);
-            if (mm != null) {
-                minimapX = mm.getX();
-                minimapY = mm.getY();
-                inMinimap = true;
-            }
+            LocalPoint lp = LocalPoint.fromWorld(client, wp);
+            if (lp != null) {
+                sceneX = lp.getSceneX();
+                sceneY = lp.getSceneY();
 
-            Player me = client.getLocalPlayer();
-            if (me != null && me.getWorldLocation() != null) {
-                distToPlayer = me.getWorldLocation().distanceTo(wp);
+                net.runelite.api.Point mm = Perspective.localToMinimap(client, lp);
+                if (mm != null) {
+                    minimapX = mm.getX();
+                    minimapY = mm.getY();
+                    inMinimap = true;
+                }
+
+                Player me = client.getLocalPlayer();
+                if (me != null && me.getWorldLocation() != null) {
+                    distToPlayer = me.getWorldLocation().distanceTo(wp);
+                }
             }
         }
 
-        // Canvas (only if actually visible)
+        // ---- Canvas projection ----
         Integer canvasX = null, canvasY = null;
         TargetPoint.BBox box = null;
         boolean inCanvas = false;
@@ -91,6 +129,7 @@ public final class TargetPointMapper {
         if (canvasShape != null) {
             r = canvasShape.getBounds();
         } else if (canvasFallback != null) {
+            // tiny fallback box around the point
             r = new Rectangle(canvasFallback.getX() - 2, canvasFallback.getY() - 2, 4, 4);
         }
 
