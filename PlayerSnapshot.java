@@ -13,8 +13,6 @@ import net.runelite.api.coords.WorldPoint;
  */
 @Value
 public class PlayerSnapshot {
-    long ts;
-
     // Position
     int worldX;
     int worldY;
@@ -49,10 +47,9 @@ public class PlayerSnapshot {
      * Capture a snapshot. Supply lastWp from the previous tick to compute "moving".
      */
     public static PlayerSnapshot capture(Client client, WorldPoint lastWp) {
-        final long ts = System.currentTimeMillis();
         final Player me = client.getLocalPlayer();
         if (me == null) {
-            return new PlayerSnapshot(ts, 0, 0, 0, 0, 0, null, null, false, -1, "unknown", null);
+            return new PlayerSnapshot(0, 0, 0, 0, 0, null, null, false, -1, "unknown", null);
         }
 
         final WorldPoint now = me.getWorldLocation();
@@ -95,7 +92,6 @@ public class PlayerSnapshot {
         }
 
         return new PlayerSnapshot(
-                ts,
                 now.getX(), now.getY(), now.getPlane(),
                 me.getLocalLocation().getSceneX(), me.getLocalLocation().getSceneY(),
                 dwx, dwy,

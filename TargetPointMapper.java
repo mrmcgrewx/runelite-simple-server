@@ -1,12 +1,15 @@
 package net.runelite.client.server;
 
-import java.awt.Rectangle;
-import java.awt.Shape;
+import java.awt.*;
+import java.awt.Point;
+import java.util.Arrays;
+import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
 
 import javax.annotation.Nullable;
@@ -15,141 +18,213 @@ import javax.annotation.Nullable;
 public final class TargetPointMapper {
     private TargetPointMapper() {}
 
-    public static TargetPoint fromGameObject(Client client, GameObject obj) {
-        if (obj == null) return null;
-        int id = obj.getId();
-        String name = safeObjectName(client, id);
-        return mapCommon(client, id, name, obj.getWorldLocation(), obj.getCanvasTilePoly(), null);
+    public static TargetPoint fromTileObject(Client client, TileObject obj) {
+        return fromTileObject(client, obj, null);
     }
 
-    public static TargetPoint fromGroundObject(Client client, GroundObject obj) {
+    public static @Nullable TargetPoint fromTileObject(
+            Client client, @Nullable TileObject obj, @Nullable String name)
+    {
         if (obj == null) return null;
-        int id = obj.getId();
-        String name = safeObjectName(client, id);
-        return mapCommon(client, id, name, obj.getWorldLocation(), obj.getCanvasTilePoly(), null);
+
+        // Try clickbox, but it can throw inside RL during certain frames.
+        Shape shape = null;
+        try {
+            shape = obj.getClickbox();
+        } catch (RuntimeException ex) {
+            // Seen when object is (de)spawning or model data is transiently null.
+            // Log at debug to avoid spam.
+            // log.debug("clickbox failed for id={} wp={} : {}", obj.getId(), safeWp(obj), ex.toString());
+        }
+
+        if (shape == null) {
+            // getCanvasTilePoly is safer, but can also be null (off-screen / not built yet)
+            try {
+                shape = obj.getCanvasTilePoly();
+            } catch (RuntimeException ignored) {}
+        }
+
+        WorldPoint wp = null;
+        try {
+            wp = obj.getWorldLocation();
+        } catch (RuntimeException ignored) {}
+
+        final String label = (name != null ? name : safeObjectName(client, obj.getId()));
+        return TargetPointMapper.mapCommon(client, wp, shape, label);
+    }
+
+    // optional tiny helper for logging
+    private static @Nullable String safeWp(TileObject o) {
+        try { WorldPoint w = o.getWorldLocation(); return (w != null ? w.toString() : "null"); }
+        catch (Exception e) { return "err"; }
     }
 
     public static TargetPoint fromNPC(Client client, NPC npc) {
         if (npc == null) return null;
-        int id = npc.getId();
-        String name = safeNpcName(npc, id);
         Shape hull = npc.getConvexHull();
-
-        // Fallback single canvas point if hull is null
-        Point fallback = null;
-        LocalPoint lp = npc.getLocalLocation();
-        if (lp != null) {
-            Point p = Perspective.localToCanvas(client, lp, client.getPlane());
-            if (p != null) fallback = p;
-        }
-        return mapCommon(client, id, name, npc.getWorldLocation(), hull, fallback);
+        return mapCommon(client, npc.getWorldLocation(), hull, null);
     }
 
-    /**
-     * Map a UI widget to a TargetPoint.
-     * World/minimap fields will be null; only canvas fields are populated.
-     *
-     * @param client RuneLite client (used by mapCommon for canvas meta if needed)
-     * @param w      the widget to map
-     * @param id     an id to label this target (e.g., itemId or your own constant)
-     * @param name   a human-friendly label for this widget
-     * @return TargetPoint with canvasBox/canvasX/canvasY set, or null if not drawable
-     */
-    public static @Nullable TargetPoint fromWidget(Client client, @Nullable Widget w, int id, @Nullable String name) {
-        if (w == null || w.isHidden()) {
-            return null;
-        }
+    public static @Nullable TargetPoint fromWidget(Client client, @Nullable Widget w) {
+        return fromWidget(client, w, null);
+    }
 
-        // Top-left on the game canvas (RuneLite Point, not AWT)
-        final Point p = w.getCanvasLocation();
-        final int width  = w.getWidth();
-        final int height = w.getHeight();
-
-        if (p == null || width <= 0 || height <= 0) {
-            return null;
-        }
-
-        // Build an AWT rectangle for mapCommon's canvasBox handling
-        final Rectangle rect = new Rectangle(p.getX(), p.getY(), width, height);
-
-        // For widgets we have no world location or tile polygon → pass nulls
-        // mapCommon(client, id, name, worldPoint=null, canvasTilePoly=null, canvasRect=rect)
-        return mapCommon(client, id, name, null, rect, p);
+    public static @Nullable TargetPoint fromWidget(Client client, @Nullable Widget w, @Nullable String name) {
+        if (w == null || w.isHidden()) return null;
+        final Rectangle rect = w.getBounds();
+        return mapCommon(client, null, rect, name);
     }
 
     /* --------- Core mapping --------- */
 
     public static TargetPoint mapCommon(
             Client client,
-            int id,
-            String name,
-            @Nullable WorldPoint wp,           // may be null for widgets/UI
-            @Nullable Shape canvasShape,      // may be null
-            @Nullable net.runelite.api.Point canvasFallback // may be null
-    ) {
+            @Nullable WorldPoint wp,
+            @Nullable Shape clickBox,
+            @Nullable String name) {
+
         // ---- World/minimap/scene ----
-        Integer worldX = null, worldY = null, plane = null, regionId = null;
-        Integer sceneX = null, sceneY = null, distToPlayer = null;
+        Integer distToPlayer = null;
         Integer minimapX = null, minimapY = null;
         boolean inMinimap = false;
+        Integer x = null;
+        Integer y = null;
+        boolean inCanvas = false;
+        Point canvas = null;
+        Integer approachX = null;
+        Integer approachY = null;
+
+        try {
+            canvas = client.getCanvas().getLocationOnScreen();
+        } catch (java.awt.IllegalComponentStateException ex) {
+            // window not realized/visible
+        }
 
         if (wp != null) {
-            worldX = wp.getX();
-            worldY = wp.getY();
-            plane  = wp.getPlane();
-            regionId = wp.getRegionID();
-
             LocalPoint lp = LocalPoint.fromWorld(client, wp);
             if (lp != null) {
-                sceneX = lp.getSceneX();
-                sceneY = lp.getSceneY();
-
                 net.runelite.api.Point mm = Perspective.localToMinimap(client, lp);
                 if (mm != null) {
-                    minimapX = mm.getX();
-                    minimapY = mm.getY();
+                    if (canvas == null) return null;
+                    minimapX = canvas.x + mm.getX();
+                    minimapY = canvas.y + mm.getY();
                     inMinimap = true;
                 }
+            }
 
-                Player me = client.getLocalPlayer();
-                if (me != null && me.getWorldLocation() != null) {
-                    distToPlayer = me.getWorldLocation().distanceTo(wp);
-                }
+            Player me = client.getLocalPlayer();
+            if (me != null && me.getWorldLocation() != null) {
+                distToPlayer = me.getWorldLocation().distanceTo(wp);
             }
         }
 
-        // ---- Canvas projection ----
-        Integer canvasX = null, canvasY = null;
-        TargetPoint.BBox box = null;
-        boolean inCanvas = false;
-
-        Rectangle viewport = new Rectangle(0, 0, client.getCanvasWidth(), client.getCanvasHeight());
+        Rectangle viewport = client.getCanvas().getBounds();
         Rectangle r = null;
 
-        if (canvasShape != null) {
-            r = canvasShape.getBounds();
-        } else if (canvasFallback != null) {
-            // tiny fallback box around the point
-            r = new Rectangle(canvasFallback.getX() - 2, canvasFallback.getY() - 2, 4, 4);
+        if (clickBox != null) {
+            r = clickBox.getBounds();
         }
 
-        if (r != null && r.width > 0 && r.height > 0 && r.intersects(viewport)) {
+        if (r != null && r.width > 0 && r.height > 0 && r.intersects(viewport) && !underWidget(client, r)) {
             inCanvas = true;
-            canvasX = r.x + r.width / 2;
-            canvasY = r.y + r.height / 2;
-            box = new TargetPoint.BBox(r.x, r.y, r.width, r.height);
+            int cx = r.x + r.width / 2;
+            int cy = r.y + r.height / 2;
+
+            if (canvas != null) {
+                x = canvas.x + cx;
+                y = canvas.y + cy;
+            }
+        }
+
+        if (!inMinimap && !inCanvas) {
+            Point approach = minimapEdgeToward(client, wp);
+            if (approach != null) {
+                approachX = approach.x;
+                approachY = approach.y;
+            }
         }
 
         return new TargetPoint(
-                id, name,
-                worldX, worldY, plane, sceneX, sceneY, regionId,
+                name,
                 minimapX, minimapY, inMinimap,
-                canvasX, canvasY, box, inCanvas,
+                x, y, inCanvas,
+                approachX, approachY,
                 distToPlayer
         );
     }
 
     /* --------- Name helpers --------- */
+
+    public static boolean underWidget(Client client, Rectangle r) {
+        Rectangle mapR = getWidgetBounds(client.getWidget(ComponentID.MINIMAP_CONTAINER));
+        Rectangle chatboxR = getWidgetBounds(client.getWidget(ComponentID.CHATBOX_CONTAINER));
+        Rectangle invR = getWidgetBounds(client.getWidget(ComponentID.INVENTORY_CONTAINER));
+
+        return intersect(r, mapR) || intersect(r, chatboxR) || intersect(r, invR);
+    }
+
+    private static Rectangle getWidgetBounds(Widget w) {
+        if (w != null && !w.isHidden()) {
+            return w.getBounds();
+        }
+        return null;
+    }
+
+    private static boolean intersect(Rectangle r, Rectangle w) {
+        if (w != null) {
+            return r.intersects(w);
+        }
+        return false;
+    }
+
+    @Nullable
+    static java.awt.Point minimapEdgeToward(Client client, WorldPoint targetWp) {
+        Player me = client.getLocalPlayer();
+        if (me == null || me.getWorldLocation() == null) return null;
+        Widget drawArea = getMinimapDrawArea(client);
+        if (drawArea == null) return null;
+
+        WorldPoint meWp = me.getWorldLocation();
+        int dx = targetWp.getX() - meWp.getX();
+        int dy = targetWp.getY() - meWp.getY();
+        if (dx == 0 && dy == 0) return null;
+
+        // Bounding square for circular map
+        Rectangle b = drawArea.getBounds();
+        int cx = b.x + b.width / 2;
+        int cy = b.y + b.height / 2;
+
+        // radius with a small safety margin so we click inside the ring
+        int radius = Math.min(b.width, b.height) / 2 - 6;
+
+        // World → screen direction, compensating minimap rotation by camera yaw
+        // RuneLite yaw is 0..2047 for 0..360°. Convert to radians.
+        double yaw = (client.getCameraYaw() & 2047) * (2 * Math.PI / 2048.0);
+
+        // OSRS world Y increases to the south; you may need to flip dy depending on
+        // how your test looks. Start with this and adjust sign if it’s 180° off.
+        double worldTheta = Math.atan2(dy, dx);
+        double screenTheta = worldTheta - yaw;
+
+        int ex = (int)Math.round(cx + radius * Math.cos(screenTheta));
+        int ey = (int)Math.round(cy + radius * Math.sin(screenTheta));
+        return new java.awt.Point(ex, ey);
+    }
+
+
+    @Nullable
+    private static Widget getMinimapDrawArea(Client client) {
+        int[] ids = new int[] {
+                ComponentID.RESIZABLE_VIEWPORT_BOTTOM_LINE_MINIMAP_DRAW_AREA,
+//                ComponentID.RESIZABLE_VIEWPORT_MINIMAP_DRAW_AREA,
+//                ComponentID.FIXED_VIEWPORT_MINIMAP_DRAW_AREA
+        };
+        for (int id : ids) {
+            Widget w = client.getWidget(id);
+            if (w != null && !w.isHidden()) return w;
+        }
+        return null;
+    }
 
     public static String safeObjectName(Client client, int objectId) {
         ObjectComposition def = client.getObjectDefinition(objectId);
@@ -162,45 +237,5 @@ public final class TargetPointMapper {
         String n = npc.getName();
         if (n == null || n.equalsIgnoreCase("null") || n.isEmpty()) n = "NPC " + npcId;
         return n;
-    }
-
-    public static TargetPoint fromWallObject(Client client, WallObject obj) {
-        if (obj == null) return null;
-        WorldPoint wp = obj.getWorldLocation();
-        Shape hull = obj.getConvexHull();
-        Point fallback = null;
-        LocalPoint lp = LocalPoint.fromWorld(client, wp);
-        if (lp != null) {
-            Point p = Perspective.localToCanvas(client, lp, client.getPlane());
-            if (p != null) fallback = p;
-        }
-        int id = obj.getId();
-        String name = safeObjectName(client, id); // or "Barrier"
-        return mapCommon(client, id, name, wp, hull, fallback);
-    }
-
-    public static TargetPoint fromDecorativeObject(Client client, DecorativeObject obj) {
-        if (obj == null) return null;
-        WorldPoint wp = obj.getWorldLocation();
-        Shape hull = obj.getConvexHull();
-        Point fallback = null;
-        LocalPoint lp = LocalPoint.fromWorld(client, wp);
-        if (lp != null) {
-            Point p = Perspective.localToCanvas(client, lp, client.getPlane());
-            if (p != null) fallback = p;
-        }
-        int id = obj.getId();
-        String name = safeObjectName(client, id);
-        return mapCommon(client, id, name, wp, hull, fallback);
-    }
-
-    // --- NEW: convenience for any TileObject
-    public static TargetPoint fromTileObject(Client client, TileObject to) {
-        if (to == null) return null;
-        if (to instanceof GameObject)       return fromGameObject(client, (GameObject) to);
-        if (to instanceof GroundObject)     return fromGroundObject(client, (GroundObject) to);
-        if (to instanceof WallObject)       return fromWallObject(client, (WallObject) to);
-        if (to instanceof DecorativeObject) return fromDecorativeObject(client, (DecorativeObject) to);
-        return null;
     }
 }

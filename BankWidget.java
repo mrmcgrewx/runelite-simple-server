@@ -4,7 +4,10 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetInfo;
 
+import javax.annotation.Nullable;
+import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -37,12 +40,44 @@ public class BankWidget {
         return bankMain != null && !bankMain.isHidden();
     }
 
-    public static Widget getFirstSlot(Client client) {
-        return client.getWidget(ComponentID.BANK_ITEM_CONTAINER);
+    @Nullable
+    public static Widget findVisibleBankFirstSlot(Client client) {
+        Widget cont = client.getWidget(ComponentID.BANK_ITEM_CONTAINER);
+        if (cont == null || cont.isHidden()) return null;
+
+        // Bank items are typically dynamic children
+        Widget[] slots = cont.getDynamicChildren();
+        if (slots == null || slots.length == 0) {
+            slots = cont.getChildren(); // fallback if your client version uses children
+        }
+        if (slots == null || slots.length == 0) return null;
+
+        Rectangle view = cont.getBounds(); // canvas-space viewport of the scrolled area
+        Widget best = null;
+        int bestY = Integer.MAX_VALUE, bestX = Integer.MAX_VALUE;
+
+        for (Widget w : slots) {
+            if (w == null) continue;
+            // skip empties; for bank item slots, getItemId() works
+            if (w.getItemId() <= 0) continue;
+
+            Rectangle r = w.getBounds();
+            if (r == null || r.width <= 0 || r.height <= 0) continue;
+            if (!r.intersects(view)) continue; // not actually visible (scrolled off)
+
+            // pick the top-left visible item
+            if (r.y < bestY || (r.y == bestY && r.x < bestX)) {
+                bestY = r.y; bestX = r.x; best = w;
+            }
+        }
+        return best;
     }
 
+
     public static Widget getCloseButton(Client client) {
-        return client.getWidget(BANK_CLOSE_ID);
+        Widget w = client.getWidget(BANK_CLOSE_ID);
+        if (w == null) return null;
+        return w.getChild(3);
     }
 
     public static List<Widget> getKeyWidgets(Client client, String pin) {
