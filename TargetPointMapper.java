@@ -158,9 +158,13 @@ public final class TargetPointMapper {
     public static boolean underWidget(Client client, Rectangle r) {
         Rectangle mapR = getWidgetBounds(client.getWidget(ComponentID.MINIMAP_CONTAINER));
         Rectangle chatboxR = getWidgetBounds(client.getWidget(ComponentID.CHATBOX_CONTAINER));
+        Rectangle chatboxButtonsR = getWidgetBounds(client.getWidget(ComponentID.CHATBOX_BUTTONS));
         Rectangle invR = getWidgetBounds(client.getWidget(ComponentID.INVENTORY_CONTAINER));
+        Rectangle tabs1R = getWidgetBounds(client.getWidget(ComponentID.RESIZABLE_VIEWPORT_BOTTOM_LINE_TABS1));
+        Rectangle tabs2R = getWidgetBounds(client.getWidget(ComponentID.RESIZABLE_VIEWPORT_BOTTOM_LINE_TABS2));
 
-        return intersect(r, mapR) || intersect(r, chatboxR) || intersect(r, invR);
+        return intersect(r, mapR) || intersect(r, chatboxR) || intersect(r, invR) || intersect(r, chatboxButtonsR) ||
+                intersect(r, tabs1R) || intersect(r, tabs2R);
     }
 
     private static Rectangle getWidgetBounds(Widget w) {

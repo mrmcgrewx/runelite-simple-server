@@ -23,7 +23,7 @@ public class DialogSnapshot {
         java.util.List<DialogOptionDto> options = new java.util.ArrayList<>();
 
         // Continue widgets (NPC/Player)
-        Widget npcCont = client.getWidget(ComponentID.DIALOG_OPTION_OPTIONS);
+        Widget npcCont = client.getWidget(ComponentID.DIALOG_NPC_TEXT);
         Widget plyCont = client.getWidget(ComponentID.DIALOG_PLAYER_TEXT);
         Widget cont = npcCont != null && !npcCont.isHidden() ? npcCont :
                 plyCont != null && !plyCont.isHidden() ? plyCont : null;
